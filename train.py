@@ -60,28 +60,28 @@ alpha=1-torch.linspace(0.0001, 0.02, steps=1000)
 sqrtalphabar,sqrt_1_m_alphabar=cal_alpha_bar(alpha, 1000)
 
 
-def forward_propagation(model, loss, input, context_1 = None, context_2 = None, time_step = 1000, device = 'cuda'):
+def forward_propagation(model, loss, metric, context_1 = None, context_2 = None, time_step = 1000, device = 'cuda'):
     '''
     Input:
-        input: Tensor [B, N, C]
-        context : Tensor [(time_step-1)*B, 1, C] or None
+        input: Tensor [B, D, N]
+        context : Tensor [(time_step-1)*B, 1, D(3)] or None
     return: loss, metric
     '''
-    noise_tensor = torch.randn(time_step, input.size(0), input.size(1), input.size(2)) #[time_step, B, N, C]
+    noise_tensor = torch.randn(time_step, input.size(0), input.size(1), input.size(2)) #[time_step, B, D, N]
     input_tensor = input.unsqueeze(0) #[1,B,N,C]
-    input_tensor = input_tensor.expand(time_step, *input_tensor.shape[1:])#广播#[time_step,B,N,C]
+    input_tensor = input_tensor.expand(time_step, *input_tensor.shape[1:])#广播#[time_step, B, D, N]
     # 将一维张量扩展到与 input_tensor 和 noise_tensor 相匹配的维度
-    sqrtalphabar_expanded = sqrtalphabar.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(input_tensor) #torch[time_step, 1 , 1, 1]->torch[time_step,B,N,C]
-    sqrt_1_m_alphabar_expanded = sqrt_1_m_alphabar.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(noise_tensor)#[time_step, B, N, C]
+    sqrtalphabar_expanded = sqrtalphabar.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(input_tensor) #torch[time_step, 1 , 1, 1]->torch[time_step, B, D, N]
+    sqrt_1_m_alphabar_expanded = sqrt_1_m_alphabar.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(noise_tensor)#[time_step, B, D, N]
     # 使用向量化操作进行计算
-    input_tensor = sqrtalphabar_expanded * input_tensor + sqrt_1_m_alphabar_expanded * noise_tensor #[time_step, B, N, C]
+    input_tensor = sqrtalphabar_expanded * input_tensor + sqrt_1_m_alphabar_expanded * noise_tensor #[time_step, B, D, N]
     #处理反向预测数据
     # 获取除了 t = 0 之外的切片
-    noise_tensor_no_t0 = noise_tensor[1:]#[time_step-1, B, N, C]
-    input_tensor_no_t0 = input_tensor[1:]#[time_step-1, B, N, C]
+    noise_tensor_no_t0 = noise_tensor[1:]#[time_step-1, B, D, N]
+    input_tensor_no_t0 = input_tensor[1:]#[time_step-1, B, D, N]
     # 沿着第一个维度展开
-    noise_tensor_flattened = noise_tensor_no_t0.reshape(-1,noise_tensor_no_t0.shape[-2],noise_tensor_no_t0.shape[-1])#[(time_step-1)*B, N, C]
-    input_tensor_flattened = input_tensor_no_t0.reshape(-1,input_tensor_no_t0.shape[-2],input_tensor_no_t0.shape[-1])#[(time_step-1)*B, N, C]
+    noise_tensor_flattened = noise_tensor_no_t0.reshape(-1,noise_tensor_no_t0.shape[-2],noise_tensor_no_t0.shape[-1])#[(time_step-1)*B, D, N]
+    input_tensor_flattened = input_tensor_no_t0.reshape(-1,input_tensor_no_t0.shape[-2],input_tensor_no_t0.shape[-1])#[(time_step-1)*B, D, N]
     # 获取 noise_tensor_flattened 的时间步总数
     N = noise_tensor_no_t0.shape[0] #time_step-1
     # 创建时间嵌入向量
@@ -155,7 +155,7 @@ def main(opt):
     valid_process = os.path.join(log_dir, "valid_process.csv")
 
     '''Init'''
-    df_model=Unet(num_in = [1,2,4,2,1], query_dim = [20, 10, 5, 10, 20], context_dim_1 = 3, context_dim_2 = 3, dropout = 0.).to(device)# input_dim, query_size,context_size, down_sampling_dim,
+    df_model=Unet( num = [200, 100, 50, 100, 200], dim = [2, 2, 4, 2, 2], context_dim_1 = 3, context_dim_2 = 3, dropout = 0.).to(device)#
     # checkpoint = torch.load('E:/wenzhe/generation2/airfoil_diffusion/models3/DFmodel_context_c3.1.5_100.pth', map_location=torch.device(device),weights_only=True)   ### 加载神经网络模型
     # df_model = partial_load_state_dict(df_model, checkpoint)
 
@@ -168,7 +168,7 @@ def main(opt):
     '''Load Data'''
     data_path = os.path.join("data","train_data_pointcloud.npz")
     data = np.load(data_path)
-    loaded_pointcloud = data['pointcloud']  # 形状 [B, N, C]
+    loaded_pointcloud = np.transpose(data['pointcloud'],(0,2,1))  # 形状 [B, N, D]-> [B, D, N]
     loaded_ACC = data['ACC']                # 形状 [B, 6]
 
     '''Dataloader'''
@@ -204,7 +204,7 @@ def main(opt):
     for epoch in range(opt.epochs):
         log_string("---------------------开始第{}轮网络训练-----------------".format(epoch))
         for batch in train_dataloader:
-            pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, N, 3]
+            pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, D, N]
             context_1 = batch['context_1']                # 形状 [batch_size, 3]
             context_2 = batch['context_2']                # 形状 [batch_size, 3]
 
@@ -223,7 +223,7 @@ def main(opt):
                 context_2 = context_2.reshape(-1,context_2.shape[-2],context_2.shape[-1])
 
             #第一次正向传播和反向传播
-            step_loss, step_metric = forward_propagation(df_model, loss, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device)
+            step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device)
             optim.zero_grad()
             step_loss.backward()
             optim.step()
@@ -238,7 +238,7 @@ def main(opt):
 
         log_string("---------------------开始第{}轮网络训练-----------------".format(epoch))
         for batch in valid_dataloader:
-            pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, N, 3]
+            pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, D, N]
             context_1 = batch['context_1']                # 形状 [batch_size, 3]
             context_2 = batch['context_2']                # 形状 [batch_size, 3]
 
@@ -257,7 +257,7 @@ def main(opt):
                 context_2 = context_2.reshape(-1,context_2.shape[-2],context_2.shape[-1])
 
             #第一次正向传播和反向传播
-            step_loss, step_metric = forward_propagation(df_model.eval(), loss, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device)
+            step_loss, step_metric = forward_propagation(df_model.eval(), loss, metric, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device)
             with open(valid_process, 'a', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])

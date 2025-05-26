@@ -40,14 +40,14 @@ def Upsample(num_in, num_out = None):
 def Downsample(num_in, num_out = None):
     return nn.Conv1d(num_in, default(num_out, num_in), 4, 2, 1)#卷积核尺寸为4，stride=2，padding=1；由于stride=2，所以输出的尺寸刚好会是输入的一半
 
-def Num_modify(num_in, num_out = None):
+def Dim_modify(dim_in, dim_out = None):
     return nn.Sequential(
-        nn.Conv1d(num_in, default(num_out, num_in), kernel_size = 3, padding = 1)#输入维度是num_in，输出维度如果dim_out有值则为num_out，否则为num
+        nn.Conv1d(dim_in, default(dim_out, dim_in), kernel_size = 3, padding = 1)#输入维度是num_in，输出维度如果dim_out有值则为num_out，否则为num
     )
 
-def Dim_modify(dim_in, dim_out):
+def Num_modify(Num_in, Num_out):
     return nn.Sequential(
-        nn.Linear(dim_in, dim_out)
+        nn.Linear(Num_in, Num_out)
     )
 
 class RMSNorm(Module):
@@ -59,13 +59,13 @@ class RMSNorm(Module):
         return F.normalize(x, dim = 1) * self.g * (x.shape[1] ** 0.5)
 
 class Block(Module):#包含卷积、归一化、激活和 Dropout 等操作的函数
-    ''' Input : [B, num_in, dim]
-        Output : [B, num_out, dim]
+    ''' Input : [B, dim, num_in]
+        Output : [B, dim, num_out]
     '''
-    def __init__(self, num_in, num_out, dropout = 0.):
+    def __init__(self, dim, dropout = 0.):
         super().__init__()
-        self.proj = nn.Conv1d(in_channels = num_in, out_channels = num_out, kernel_size = 3, padding = 1)#一维卷积
-        self.norm = RMSNorm(num_out)
+        self.proj = nn.Conv1d(in_channels = dim, out_channels = dim, kernel_size = 3, padding = 1)#一维卷积
+        self.norm = RMSNorm(dim)
         self.act = nn.SiLU()  #Sigmoid
         self.dropout = nn.Dropout(dropout)
 
@@ -82,19 +82,19 @@ class Block(Module):#包含卷积、归一化、激活和 Dropout 等操作的�
 
 class ResnetBlock(Module):
     '''
-    Input :  [B, num_in, dim]
-    Output:  [B, num_out, dim]
+    Input :  [B, dim, num_in]
+    Output:  [B, dim, num_out]
     '''
-    def __init__(self, num_in, num_out, *, time_emb_dim = None, dropout = 0.):
+    def __init__(self, dim_in, dim_out, *, time_emb_dim = None, dropout = 0.):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(time_emb_dim, num_out * 2)
+            nn.Linear(time_emb_dim, dim_out * 2)
         ) if exists(time_emb_dim) else None
 
-        self.block1 = Block(num_in, num_out, dropout = dropout)
-        self.block2 = Block(num_out, num_out)
-        self.res_conv = nn.Conv1d(num_in, num_out, 1) if num_in != num_out else nn.Identity()
+        self.block1 = Block(dim_in, dropout = dropout)
+        self.block2 = Block(dim_in)
+        self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
 
     def forward(self, x, time_emb = None):
 
@@ -113,11 +113,11 @@ class ResnetBlock(Module):
     
 class CrossAttention(nn.Module):
     '''
-    Input : [B, num, query_dim]
-            [B, num, context_dim]
-    Output : [B, num, query_dim]
+    Input :  query [B, query_dim, num]
+             context [B, num, context_dim]
+    Output : [B, query_dim, num]
     '''
-    def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.):
+    def __init__(self, query_dim, out_dim, context_dim=None, heads=8, dim_head=64, dropout=0.):
         super().__init__()
         inner_size = dim_head * heads
         context_dim = default(context_dim, query_dim)
@@ -140,7 +140,7 @@ class CrossAttention(nn.Module):
         )
 
         self.to_out = nn.Sequential(
-            nn.Linear(inner_size, query_dim),
+            nn.Linear(inner_size, out_dim),
             nn.Dropout(dropout)
         )
 
@@ -153,6 +153,7 @@ class CrossAttention(nn.Module):
 
 
     def forward(self, x, context=None, mask=None):
+        x = x.permute(0,2,1) #[B, query_dim, num] -> [B, num, query_dim]
         h = self.heads
         q = self.proj_q(x)
         v = self.proj_v(x)
@@ -175,68 +176,45 @@ class CrossAttention(nn.Module):
         attn = sim.softmax(dim=-1)
 
         out = einsum('b i j, b j d -> b i d', attn, v)
-        out = rearrange(out, 'b (h n) d -> b n (h d)', h=h)
-        return self.to_out(out)
+        out = rearrange(out, 'b (h n) d -> b n (h d)', h=h) 
+        out = self.to_out(out)
+        return out.permute(0,2,1) #[B, num, query_dim]  -> [B, query_dim, num]
     
-class UNet_Block_down(nn.Module):
+class UNet_Block(nn.Module):
     '''
-    Input:  [B, num_in, query_dim_in]
+    Input:  [B, query_dim_in, num_in]
             [B, time_emb_dim]
-    Output: [B, num_out, query_dim_out]
+    Output: [B, query_dim_out, num_out]
     '''
-    def __init__(self, num_in, num_out, query_dim_in, query_dim_out, context_dim, time_emb_dim=None, dropout = 0.):
+    def __init__(self, num_in, num_out, dim_in, dim_out, context_dim, time_emb_dim=None, dropout = 0.):
         super().__init__()
-        self.resnet=ResnetBlock(num_in, num_in, time_emb_dim = time_emb_dim, dropout = dropout)
-        self.crossattention=CrossAttention(query_dim=query_dim_in, context_dim=context_dim, heads=8, dim_head=64, dropout=dropout)
-        # self.downsample=Downsample(num_in, num_out = num_out)
+        self.resnet=ResnetBlock(dim_in, dim_in, time_emb_dim = time_emb_dim, dropout = dropout)
         self.nummodify = Num_modify(num_in, num_out)
-        self.dimmodify = Dim_modify(query_dim_in, query_dim_out)
-
-    def forward(self, x,time_emb = None, context=None,):
-        x=self.resnet(x,time_emb)
-        x=self.crossattention(x, context)
-        # x=self.downsample(x)
-        x=self.nummodify(x)
-        x=self.dimmodify(x)
-        return x
-
-class UNet_Block_up(nn.Module):
-    '''
-    Input:  [B, num_in, query_dim]
-            [B, time_emb_dim]
-    Output: [B, num_out, query_dim]
-    '''
-    def __init__(self, num_in, num_out, query_dim_in, query_dim_out, context_dim, time_emb_dim=None, dropout = 0.):
-        super().__init__()
-        self.resnet=ResnetBlock(num_in, num_in, time_emb_dim = time_emb_dim, dropout = dropout)
-        self.crossattention=CrossAttention(query_dim=query_dim_in, context_dim=context_dim, heads=8, dim_head=64, dropout=dropout)
-        self.upsample=Upsample(num_in, num_out = num_out)
-        self.nummodify = Num_modify(num_in, num_out)
-        self.dimmodify = Dim_modify(query_dim_in, query_dim_out)
+        self.crossattention=CrossAttention(query_dim=dim_in, out_dim=dim_out, context_dim=context_dim, heads=8, dim_head=64, dropout=dropout)
+        
 
     def forward(self, x,time_emb = None, context=None):
         x=self.resnet(x,time_emb)
-        x=self.crossattention(x, context)
-        # x=self.upsample(x)
         x=self.nummodify(x)
-        x=self.dimmodify(x)
+        x=self.crossattention(x, context)
+        print(x.shape)
         return x
     
 
 class Unet(nn.Module):
     '''
-    Input:  x:[B, num_in, query_dim]
+    Input:  x:[B, dim, num]
             time_emb:[B, time_emb_dim(1)]
             context:[B, num(1), context_dim]
-    Output: [B, num_out, query_dim]
+    Output: [B, dim_out, num_out]
     '''
-    def __init__(self, num_in = [1,2,4,2,1], query_dim = [20, 10, 5, 10, 20], context_dim_1 = 3, context_dim_2 = 3, dropout = 0.):
+    def __init__(self, num = [20, 10, 5, 10, 20], dim = [1, 2, 4, 2, 1], context_dim_1 = 3, context_dim_2 = 3, dropout = 0.):
         super().__init__()
-        self.block_down_1=UNet_Block_down( num_in = num_in[0], num_out = num_in[1], query_dim_in = query_dim[0], query_dim_out = query_dim[1], context_dim = context_dim_1, time_emb_dim = 1, dropout = dropout)
-        self.block_down_2=UNet_Block_down( num_in = num_in[1], num_out = num_in[2], query_dim_in = query_dim[1], query_dim_out = query_dim[2], context_dim = context_dim_1, time_emb_dim = 1, dropout = dropout)
+        self.block_down_1=UNet_Block( num_in = num[0], num_out = num[1], dim_in = dim[0], dim_out = dim[1], context_dim = context_dim_1, time_emb_dim = 1, dropout = dropout)
+        self.block_down_2=UNet_Block( num_in = num[1], num_out = num[2], dim_in = dim[1], dim_out = dim[2], context_dim = context_dim_1, time_emb_dim = 1, dropout = dropout)
 
-        self.block_up_2=UNet_Block_up( num_in = num_in[2], num_out = num_in[3], query_dim_in = query_dim[2], query_dim_out = query_dim[3], context_dim = context_dim_2, time_emb_dim = 1, dropout = dropout)
-        self.block_up_1=UNet_Block_up( num_in = num_in[3], num_out = num_in[4], query_dim_in = query_dim[3], query_dim_out = query_dim[4], context_dim = context_dim_2, time_emb_dim = 1, dropout = dropout)
+        self.block_up_2=UNet_Block( num_in = num[2], num_out = num[3], dim_in = dim[2], dim_out = dim[3], context_dim = context_dim_2, time_emb_dim = 1, dropout = dropout)
+        self.block_up_1=UNet_Block( num_in = num[3], num_out = num[4], dim_in = dim[3], dim_out = dim[4], context_dim = context_dim_2, time_emb_dim = 1, dropout = dropout)
 
     def forward(self, x, time_emb, context_1=None, context_2=None):
         d1=self.block_down_1( x, time_emb, context = context_1)
