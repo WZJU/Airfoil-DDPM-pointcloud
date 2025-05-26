@@ -193,10 +193,13 @@ class UNet_Block(nn.Module):
         self.crossattention=CrossAttention(query_dim=dim_in, out_dim=dim_out, context_dim=context_dim, heads=8, dim_head=64, dropout=dropout)
         
 
-    def forward(self, x,time_emb = None, context=None):
+    def forward(self, x,time_emb = None, context=None, num_mod_first = True):
         x=self.resnet(x,time_emb)
-        x=self.nummodify(x)
+        if num_mod_first:
+            x=self.nummodify(x)
         x=self.crossattention(x, context)
+        if not num_mod_first:
+            x=self.nummodify(x)
         print(x.shape)
         return x
     
@@ -219,8 +222,8 @@ class Unet(nn.Module):
     def forward(self, x, time_emb, context_1=None, context_2=None):
         d1=self.block_down_1( x, time_emb, context = context_1)
         d2=self.block_down_2( d1, time_emb, context = context_1)
-        u2=self.block_up_2( d2, context = context_2)
-        u1=self.block_up_1( u2+d1, context = context_2)
+        u2=self.block_up_2( d2, context = context_2, num_mod_first = False)
+        u1=self.block_up_1( u2+d1, context = context_2, num_mod_first = False)
         return u1
     
 '''Generation'''
