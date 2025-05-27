@@ -7,14 +7,17 @@ def parser():
 
     parser.add_argument('--log_dir', type=str, default=None, help='')#
     parser.add_argument('--model', type=str, default='pointcloud_diffusion', help='')#
+    parser.add_argument('--data_path', type=str, default=None, help='')#
 
 
     parser.add_argument('--learning_rate', default=0.0001, type=float, help='learning rate in training')#
+    parser.add_argument('--epochs', default=1, type=int, help='learning rate in training')#
     parser.add_argument('--train_split', default=0.8, type=float, help='learning rate in training')#
     parser.add_argument('--valid_split', default=0.1, type=float, help='learning rate in training')#
-    parser.add_argument('--batch_size', default=64, type=int, help='learning rate in training')#
+    parser.add_argument('--batch_size', default=4, type=int, help='learning rate in training')#
     parser.add_argument('--shuffle', default=True, type=bool, help='learning rate in training')#
-    parser.add_argument('--num_workers', default=3, type=int, help='learning rate in training')#
+    parser.add_argument('--num_workers', default=2, type=int, help='learning rate in training')#
+    parser.add_argument('--time_step', default=1000, type=int, help='learning rate in training')#
     
 
     opt = parser.parse_args()

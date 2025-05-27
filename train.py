@@ -24,7 +24,7 @@ import datetime
 import logging
 from pathlib import Path
 import os
-
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 
 def generate_gaussian_tensor(batch_size, dim, size):
     tensor = torch.empty(batch_size, dim, size)
@@ -56,11 +56,8 @@ def cal_alpha_bar(alpha, max_t):
         sqrt_1_m_alphabar[i]=sqrt(1-alphabar_temp)
     return sqrtalphabar, sqrt_1_m_alphabar
 
-alpha=1-torch.linspace(0.0001, 0.02, steps=1000)
-sqrtalphabar,sqrt_1_m_alphabar=cal_alpha_bar(alpha, 1000)
 
-
-def forward_propagation(model, loss, metric, context_1 = None, context_2 = None, time_step = 1000, device = 'cuda'):
+def forward_propagation(model, loss, metric, input, context_1 = None, context_2 = None, time_step = 1000, device = 'cuda'):
     '''
     Input:
         input: Tensor [B, D, N]
@@ -97,9 +94,6 @@ def forward_propagation(model, loss, metric, context_1 = None, context_2 = None,
     metric = metric(pred_noise_context, noise_tensor_flattened)
     return loss, metric
 
-
-
-
 def save_info(epoch, current_lr, loss, log_dir, type='step'):
     if type=='step':
         train_process=os.path.join(log_dir, 'step_info.csv')
@@ -125,7 +119,7 @@ def main(opt):
 
     '''CREATE DIR'''
     timestr = str(datetime.datetime.now().strftime('%Y-%m-%d_%H-%M'))
-    exp_dir = Path('E:/wenzhe/generate_3/Encoder-Decoder/log/')
+    exp_dir = Path(os.path.join('log'))
     exp_dir.mkdir(exist_ok=True)
     exp_dir = exp_dir.joinpath(opt.model)
     exp_dir.mkdir(exist_ok=True)
@@ -155,18 +149,25 @@ def main(opt):
     valid_process = os.path.join(log_dir, "valid_process.csv")
 
     '''Init'''
-    df_model=Unet( num = [200, 100, 50, 100, 200], dim = [2, 2, 4, 2, 2], context_dim_1 = 3, context_dim_2 = 3, dropout = 0.).to(device)#
+    df_model=Unet(num = [200, 100, 50, 100, 200], dim = [2, 2, 4, 2, 2], context_dim_1 = 3, context_dim_2 = 3, dropout = 0.).to(device)#
     # checkpoint = torch.load('E:/wenzhe/generation2/airfoil_diffusion/models3/DFmodel_context_c3.1.5_100.pth', map_location=torch.device(device),weights_only=True)   ### 加载神经网络模型
     # df_model = partial_load_state_dict(df_model, checkpoint)
 
     loss = nn.MSELoss().to(device)
     metric = nn.L1Loss().to(device)
-    optim = torch.optim.Adam(df_model.parameters(), lr=opt.learningRate)
+    optim = torch.optim.Adam(df_model.parameters(), lr=opt.learning_rate)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optim, step_size=20, gamma=0.3, last_epoch=-1)
-    time_step = 1000
+
+    time_step = opt.time_step
+    alpha=1-torch.linspace(0.0001, 0.02, steps=time_step)
+    global sqrtalphabar,sqrt_1_m_alphabar
+    sqrtalphabar,sqrt_1_m_alphabar = cal_alpha_bar(alpha, time_step)
 
     '''Load Data'''
-    data_path = os.path.join("data","train_data_pointcloud.npz")
+    if opt.data_path is not None:
+        data_path = opt.data_path
+    else:
+        data_path = os.path.join("../data","train_data_pointcloud.npz")
     data = np.load(data_path)
     loaded_pointcloud = np.transpose(data['pointcloud'],(0,2,1))  # 形状 [B, N, D]-> [B, D, N]
     loaded_ACC = data['ACC']                # 形状 [B, 6]
@@ -202,7 +203,12 @@ def main(opt):
 
     train_step=0
     for epoch in range(opt.epochs):
-        log_string("---------------------开始第{}轮网络训练-----------------".format(epoch))
+        log_string("---------------------开始第{}轮网络训练-----------------".format(epoch+1))
+
+        train_loss = 0
+        train_metric = 0
+        train_number = 0
+
         for batch in train_dataloader:
             pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, D, N]
             context_1 = batch['context_1']                # 形状 [batch_size, 3]
@@ -223,20 +229,71 @@ def main(opt):
                 context_2 = context_2.reshape(-1,context_2.shape[-2],context_2.shape[-1])
 
             #第一次正向传播和反向传播
-            step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device)
+            step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = None, context_2 = None, time_step = time_step, device = opt.device)
             optim.zero_grad()
             step_loss.backward()
             optim.step()
-            train_step+=1
+            train_step += 1
+            train_number += 1
+            train_loss += step_loss.item()
+            train_metric += step_metric.item()
             current_lr = optim.param_groups[0]['lr']
             with open(train_process, 'a', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
+                
 
+            if context_1 is not None:
+                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = None, time_step = time_step, device = opt.device)
+                optim.zero_grad()
+                step_loss.backward()
+                optim.step()
+                train_step+=1
+                train_number += 1
+                train_loss += step_loss.item()
+                train_metric += step_metric.item()
+                current_lr = optim.param_groups[0]['lr']
+                with open(train_process, 'a', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
+                    
+            
+            if context_2 is not None:
+                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = None, context_2 = context_2, time_step = time_step, device = opt.device)
+                optim.zero_grad()
+                step_loss.backward()
+                optim.step()
+                train_step+=1
+                train_number += 1
+                train_loss += step_loss.item()
+                train_metric += step_metric.item()
+                current_lr = optim.param_groups[0]['lr']
+                with open(train_process, 'a', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
+                    
+            
+            if context_1 is not None and context_2 is not None:
+                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device)
+                optim.zero_grad()
+                step_loss.backward()
+                optim.step()
+                train_step+=1
+                train_number += 1
+                train_loss += step_loss.item()
+                train_metric += step_metric.item()
+                current_lr = optim.param_groups[0]['lr']
+                with open(train_process, 'a', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
+            
 
-
-
-        log_string("---------------------开始第{}轮网络训练-----------------".format(epoch))
+            log_string(f"[TRAIN] Epoch: {epoch+1}, MSE = {train_loss/train_number}, MAE = {train_metric/train_number}")
+                    
+        
+        valid_loss = 0
+        valid_metric = 0
+        valid_number = 0
         for batch in valid_dataloader:
             pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, D, N]
             context_1 = batch['context_1']                # 形状 [batch_size, 3]
@@ -256,11 +313,27 @@ def main(opt):
                 context_2 = context_2.expand(time_step-1, *context_2.shape[1:])#广播,但是少一次，因为t=0的时候不用
                 context_2 = context_2.reshape(-1,context_2.shape[-2],context_2.shape[-1])
 
-            #第一次正向传播和反向传播
-            step_loss, step_metric = forward_propagation(df_model.eval(), loss, metric, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device)
+
+            #正向传播
+            step_loss, step_metric = forward_propagation(df_model.eval(), loss, metric, pointcloud_batch, context_1 = None, context_2 = None, time_step = time_step, device = opt.device)
+            valid_number += 1
+            valid_loss += step_loss.item()
+            valid_metric +=step_metric.item()
             with open(valid_process, 'a', newline='') as csvfile:
                 writer = csv.writer(csvfile)
-                writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
+                writer.writerow([epoch + 1, step_loss.item(), step_metric.item()])
+            
+            if context_1 is not None or context_2 is not None:
+                step_loss, step_metric = forward_propagation(df_model.eval, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device)
+                valid_number += 1
+                valid_loss += step_loss.item()
+                valid_metric +=step_metric.item()
+                with open(train_process, 'a', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow([epoch + 1, step_loss.item(), step_metric.item()])
+            
+            log_string(f"[VALID] Epoch: {epoch+1}, MSE = {valid_loss/valid_number}, MAE = {valid_metric/valid_number}")
+            
 
 
 if __name__ == '__main__':

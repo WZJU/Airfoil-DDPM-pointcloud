@@ -200,7 +200,7 @@ class UNet_Block(nn.Module):
         x=self.crossattention(x, context)
         if not num_mod_first:
             x=self.nummodify(x)
-        print(x.shape)
+        # print(x.shape)
         return x
     
 
