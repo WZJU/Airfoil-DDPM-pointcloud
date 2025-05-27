@@ -295,7 +295,7 @@ def main(opt):
                     writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
             
 
-            log_string(f"[TRAIN] Epoch: {epoch+1}, MSE = {train_loss/train_number}, MAE = {train_metric/train_number}")
+        log_string(f"[TRAIN] Epoch: {epoch+1}, MSE = {train_loss/train_number}, MAE = {train_metric/train_number}")
                     
         
         valid_loss = 0
@@ -339,17 +339,17 @@ def main(opt):
                     writer = csv.writer(csvfile)
                     writer.writerow([epoch + 1, step_loss.item(), step_metric.item()])
             
-            log_string(f"[VALID] Epoch: {epoch+1}, MSE = {valid_loss/valid_number}, MAE = {valid_metric/valid_number}")
+        log_string(f"[VALID] Epoch: {epoch+1}, MSE = {valid_loss/valid_number}, MAE = {valid_metric/valid_number}")
 
 
-            '''保存模型'''
-            if  valid_loss/valid_number < best_loss:
-                best_loss = valid_loss/valid_number
-                model_state = {'models': df_model.state_dict(),      ### 模型保存用于神经网络模型的加载与续算
-                        'optimizer': optim.state_dict(),
-                        'epoch': epoch + 1}
-                best_model_path = checkpoints_dir / 'best_model.pth'  # 拼接路径 
-                torch.save(model_state, best_model_path)  # 保存模型权重
+        '''保存模型'''
+        if  valid_loss/valid_number < best_loss:
+            best_loss = valid_loss/valid_number
+            model_state = {'models': df_model.state_dict(),      ### 模型保存用于神经网络模型的加载与续算
+                    'optimizer': optim.state_dict(),
+                    'epoch': epoch + 1}
+            best_model_path = checkpoints_dir / 'best_model.pth'  # 拼接路径 
+            torch.save(model_state, best_model_path)  # 保存模型权重
 
 
 if __name__ == '__main__':

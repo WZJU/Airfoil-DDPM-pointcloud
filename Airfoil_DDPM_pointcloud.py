@@ -12,6 +12,7 @@ from math import sqrt
 import csv
 from einops import rearrange, repeat
 import numpy as np
+from torch.nn import MultiheadAttention
 
 def exists(x):
     return x is not None
@@ -117,30 +118,26 @@ class CrossAttention(nn.Module):
              context [B, num, context_dim]
     Output : [B, query_dim, num]
     '''
-    def __init__(self, query_dim, out_dim, context_dim=None, heads=8, dim_head=64, dropout=0.):
+    def __init__(self, query_dim, out_dim, context_dim=None, heads=4, dim_head=32, dropout=0.):
         super().__init__()
-        inner_size = dim_head * heads
         context_dim = default(context_dim, query_dim)
-
-        self.scale = dim_head ** -0.5
-        self.heads = heads
 
         self.proj_q = nn.Sequential(
             nn.Linear(query_dim, 40, bias=False),
-            nn.Linear(40, inner_size, bias=False)
+            nn.Linear(40, dim_head, bias=False)
         )
         self.proj_k = nn.Sequential(
             nn.Linear(query_dim, 40, bias=False),
             nn.SiLU(),
-            nn.Linear(40, inner_size, bias=False)     
+            nn.Linear(40, dim_head, bias=False)     
         )
         self.proj_v = nn.Sequential(
             nn.Linear(query_dim, 40, bias=False),
-            nn.Linear(40, inner_size, bias=False)
+            nn.Linear(40, dim_head, bias=False)
         )
 
         self.to_out = nn.Sequential(
-            nn.Linear(inner_size, out_dim),
+            nn.Linear(dim_head, out_dim),
             nn.Dropout(dropout)
         )
 
@@ -148,13 +145,16 @@ class CrossAttention(nn.Module):
             self.proj_c2k = nn.Sequential(
             nn.Linear(context_dim, 40, bias=False),
             nn.SiLU(),
-            nn.Linear(40, inner_size, bias=False)
+            nn.Linear(40, dim_head, bias=False)
         )
-
+        self.cross_attn = MultiheadAttention(
+            embed_dim=dim_head,
+            num_heads=heads,
+            batch_first=True
+        )
 
     def forward(self, x, context=None, mask=None):
         x = x.permute(0,2,1) #[B, query_dim, num] -> [B, num, query_dim]
-        h = self.heads
         q = self.proj_q(x)
         v = self.proj_v(x)
         if context is not None:
@@ -163,21 +163,14 @@ class CrossAttention(nn.Module):
         else:
             k = self.proj_k(x)
 
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b (h n) d', h=h), (q, k, v))
 
-        sim = einsum('b i d, b j d -> b i j', q, k) * self.scale #softmax(qk/sqrt(d))v中的qk/sqrt(d)
+        attn_output, _ = self.cross_attn(
+                    query=q,
+                    key=k,
+                    value=v
+                )
 
-        if exists(mask):
-            mask = rearrange(mask, 'b ... -> b (...)')
-            max_neg_value = -torch.finfo(sim.dtype).max
-            mask = repeat(mask, 'b j -> (b h) () j', h=h)
-            sim.masked_fill_(~mask, max_neg_value)
-
-        attn = sim.softmax(dim=-1)
-
-        out = einsum('b i j, b j d -> b i d', attn, v)
-        out = rearrange(out, 'b (h n) d -> b n (h d)', h=h) 
-        out = self.to_out(out)
+        out = self.to_out(attn_output)
         return out.permute(0,2,1) #[B, num, query_dim]  -> [B, query_dim, num]
     
 class UNet_Block(nn.Module):
@@ -190,7 +183,7 @@ class UNet_Block(nn.Module):
         super().__init__()
         self.resnet=ResnetBlock(dim_in, dim_in, time_emb_dim = time_emb_dim, dropout = dropout)
         self.nummodify = Num_modify(num_in, num_out)
-        self.crossattention=CrossAttention(query_dim=dim_in, out_dim=dim_out, context_dim=context_dim, heads=8, dim_head=64, dropout=dropout)
+        self.crossattention=CrossAttention(query_dim=dim_in, out_dim=dim_out, context_dim=context_dim, heads=4, dim_head=32, dropout=dropout)
         
 
     def forward(self, x,time_emb = None, context=None, num_mod_first = True):
