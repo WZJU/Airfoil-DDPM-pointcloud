@@ -11,10 +11,10 @@ def parser():
 
 
     parser.add_argument('--learning_rate', default=0.0001, type=float, help='learning rate in training')#
-    parser.add_argument('--epochs', default=1, type=int, help='learning rate in training')#
+    parser.add_argument('--epochs', default=100, type=int, help='learning rate in training')#
     parser.add_argument('--train_split', default=0.8, type=float, help='learning rate in training')#
     parser.add_argument('--valid_split', default=0.1, type=float, help='learning rate in training')#
-    parser.add_argument('--batch_size', default=32, type=int, help='learning rate in training')#
+    parser.add_argument('--batch_size', default=24, type=int, help='learning rate in training')#
     parser.add_argument('--shuffle', default=True, type=bool, help='learning rate in training')#
     parser.add_argument('--num_workers', default=2, type=int, help='learning rate in training')#
     parser.add_argument('--time_step', default=500, type=int, help='learning rate in training')#

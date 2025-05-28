@@ -101,6 +101,7 @@ class ResnetBlock(Module):
 
         scale_shift = None
         if exists(self.mlp) and exists(time_emb):#如果有time embedding，则用MLP对time embedding进行处理
+            time_emb = time_emb / 500 
             time_emb = self.mlp(time_emb)
             time_emb = rearrange(time_emb, 'b c -> b c 1')
             scale_shift = time_emb.chunk(2, dim = 1)
@@ -128,7 +129,7 @@ class CrossAttention(nn.Module):
         )
         self.proj_k = nn.Sequential(
             nn.Linear(query_dim, 40, bias=False),
-            nn.SiLU(),
+            nn.ReLU(),
             nn.Linear(40, dim_head, bias=False)     
         )
         self.proj_v = nn.Sequential(
@@ -144,7 +145,7 @@ class CrossAttention(nn.Module):
         if context_dim is not None:
             self.proj_c2k = nn.Sequential(
             nn.Linear(context_dim, 40, bias=False),
-            nn.SiLU(),
+            nn.ReLU(),
             nn.Linear(40, dim_head, bias=False)
         )
         self.cross_attn = MultiheadAttention(
