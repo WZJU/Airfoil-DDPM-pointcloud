@@ -299,6 +299,7 @@ def main(opt):
                     writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
             
         lr_scheduler.step()
+        torch.cuda.empty_cache()
         log_string(f"[TRAIN] Epoch: {epoch+1}, MSE = {train_loss/train_number}, MAE = {train_metric/train_number}")
                     
         
@@ -344,7 +345,8 @@ def main(opt):
                 with open(valid_process, 'a', newline='') as csvfile:
                     writer = csv.writer(csvfile)
                     writer.writerow([epoch + 1, step_loss.item(), step_metric.item()])
-            
+                    
+        torch.cuda.empty_cache()  
         log_string(f"[VALID] Epoch: {epoch+1}, MSE = {valid_loss/valid_number}, MAE = {valid_metric/valid_number}")
 
 

@@ -122,23 +122,28 @@ class CrossAttention(nn.Module):
     def __init__(self, query_dim, out_dim, context_dim=None, heads=4, dim_head=32, dropout=0.):
         super().__init__()
         context_dim = default(context_dim, query_dim)
+        inner_dim = dim_head * heads
+        self.heads = heads
+        self.scale = dim_head ** -0.5
 
         self.proj_q = nn.Sequential(
             nn.Linear(query_dim, 40, bias=False),
-            nn.Linear(40, dim_head, bias=False)
+            nn.ReLU(),
+            nn.Linear(40, inner_dim, bias=False)
         )
         self.proj_k = nn.Sequential(
             nn.Linear(query_dim, 40, bias=False),
             nn.ReLU(),
-            nn.Linear(40, dim_head, bias=False)     
+            nn.Linear(40, inner_dim, bias=False)     
         )
         self.proj_v = nn.Sequential(
             nn.Linear(query_dim, 40, bias=False),
-            nn.Linear(40, dim_head, bias=False)
+            nn.ReLU(),
+            nn.Linear(40, inner_dim, bias=False)
         )
 
         self.to_out = nn.Sequential(
-            nn.Linear(dim_head, out_dim),
+            nn.Linear(inner_dim, out_dim),
             nn.Dropout(dropout)
         )
 
