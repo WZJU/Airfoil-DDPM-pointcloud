@@ -214,14 +214,14 @@ class Unet(nn.Module):
     '''
     def __init__(self, dim = 2, encoder_dim=128, time_emb_dim=1, context_dim_1 = 3, context_dim_2 = 3, dropout = 0.):
         super().__init__()
-        self.encoder = PointNetEncoder(dim=dim, dim_out=encoder_dim)
-        self.block_1 = UNet_Block(dim=dim, context_dim=encoder_dim, time_emb_dim=time_emb_dim, dropout = dropout)
+        # self.encoder = PointNetEncoder(dim=dim, dim_out=encoder_dim)
+        # self.block_1 = UNet_Block(dim=dim, context_dim=encoder_dim, time_emb_dim=time_emb_dim, dropout = dropout)
         self.block_2 = UNet_Block(dim=dim, context_dim=context_dim_1, time_emb_dim=time_emb_dim, dropout = dropout)
         self.block_3 = UNet_Block(dim=dim, context_dim=context_dim_2, time_emb_dim=time_emb_dim, dropout = dropout)
 
     def forward(self, x, time_emb, context_1=None, context_2=None):
-        position_emb = self.encoder(x)
-        x = self.block_1(x, time_emb=time_emb, context=position_emb)
+        # position_emb = self.encoder(x)
+        # x = self.block_1(x, time_emb=time_emb, context=position_emb)
         x = self.block_2(x, time_emb=time_emb, context=context_1)
         x = self.block_3(x, time_emb=time_emb, context=context_2)
         return x

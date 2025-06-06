@@ -7,7 +7,7 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-from Airfoil_DDPM_pointcloud import Unet
+from Airfoil_DDPM_pointcloudV2 import Unet
 from torch.utils.data import DataLoader,TensorDataset
 from torch.utils.tensorboard import SummaryWriter
 #from mlp_data import MyData
@@ -57,6 +57,15 @@ def cal_alpha_bar(alpha, max_t):
         sqrt_1_m_alphabar[i]=sqrt(1-alphabar_temp)
     return sqrtalphabar, sqrt_1_m_alphabar
 
+def random_sample_points(input, num_samples=100):
+    B, D, N = input.shape
+    # 生成随机索引（每个样本独立采样，不重复）
+    indices = torch.stack([torch.randperm(N)[:num_samples] for _ in range(B)], dim=0)  # [B, 100]
+    indices = indices.unsqueeze(1).expand(-1, D, -1)  # [B, D, 100]
+    # 使用 gather 采样
+    sampled = torch.gather(input, dim=2, index=indices.to(input.device))
+    return sampled
+
 
 def forward_propagation(model, loss, metric, input, context_1 = None, context_2 = None, time_step = 1000, device = 'cuda'):
     '''
@@ -66,6 +75,7 @@ def forward_propagation(model, loss, metric, input, context_1 = None, context_2 
     return: loss, metric
     '''
     with torch.no_grad():
+        input = random_sample_points(input, num_samples=100)#[B, D, N sample]
         noise_tensor = torch.randn(time_step, input.size(0), input.size(1), input.size(2)) #[time_step, B, D, N]
         input_tensor = input.unsqueeze(0) #[1,B,N,C]
         input_tensor = input_tensor.expand(time_step, *input_tensor.shape[1:])#广播#[time_step, B, D, N]
@@ -157,7 +167,7 @@ def main(opt):
     shutil.copy(os.path.join('Airfoil_DDPM_pointcloud.py'), str(exp_dir))
 
     '''Init'''
-    df_model=Unet(num = [200, 100, 50, 100, 200], dim = [2, 2, 4, 2, 2], context_dim_1 = 3, context_dim_2 = 3, dropout = 0.).to(device)#
+    df_model=Unet(dim = 2, encoder_dim=128, time_emb_dim=1, context_dim_1 = 3, context_dim_2 = 3, dropout = 0.).to(device)#
     # checkpoint = torch.load('E:/wenzhe/generation2/airfoil_diffusion/models3/DFmodel_context_c3.1.5_100.pth', map_location=torch.device(device),weights_only=True)   ### 加载神经网络模型
     # df_model = partial_load_state_dict(df_model, checkpoint)
 
