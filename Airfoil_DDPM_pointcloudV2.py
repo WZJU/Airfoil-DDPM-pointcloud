@@ -274,54 +274,61 @@ class Airfoil_DDPM_multitask(nn.Module):
     context_1, context_2 : [num, size]
 
     '''
-    def __init__(self, model):
+    def __init__(self, model, device='cuda'):
         super().__init__()
         #self.model=Unet(input_dim, query_size,context_size, down_sampling_dim, dropout = 0.)
         # 模型加载
         #checkpoint = torch.load(model_filename, map_location=torch.device('cuda'),weights_only=True)   ### 加载神经网络模型
         #self.model.load_state_dict(checkpoint['models'])
-        self.model=model
-        on_cuda = next(self.model.parameters()).is_cuda
+        self.model=model.to(device)
 
         self.beta=torch.linspace(0.0001, 0.02, steps=1000)
         self.alpha=1-self.beta
         self.alphabar=cal_alpha_bar(self.alpha, 1000)
-        # 如果模型在 CUDA 上，将张量也移动到 CUDA
-        if on_cuda:
-            self.beta = self.beta.cuda()
-            self.alpha = self.alpha.cuda()
-            self.alphabar = self.alphabar.cuda()
-            self.model = self.model.cuda()
 
-    def forward(self, x, context_1, context_2, CFG=1, t_max=1000):
-        mean = 0.0  # 均值
+
+        self.beta = self.beta.to(device)
+        self.alpha = self.alpha.to(device)
+        self.alphabar = self.alphabar.to(device)
+        self.model = self.model.to(device)
+        self.device = device
+
+    def forward(self, x, context_1, context_2, CFG=1, t_max=500):
+        mean = 0.5  # 均值
         std = 1.0  # 标准差
         if x is None:
-            x = torch.normal(mean=mean, std=std, size=(20,)).reshape(1,-1,20).cuda()
-            if context_1 is not None:
-                 shape_1=context_1.shape[0]
-            else:
-                shape_1=1
-            if context_2 is not None:
-                 shape_2=context_2.shape[0]
-            else:
-                shape_2=1
-
-            x.repeat(shape_1*shape_2, 1, 1).cuda()
+            x = torch.normal(mean=mean, std=std, size=(200,)).reshape(1,2,-1).to(self.device)
         else:
             xmean = x.mean()
             xstd = x.std()
             x = (x - xmean) / xstd*2
-            x=x.repeat(context_1.shape[0]*context_2.shape[0], 1, 1)
-        context_1_combined,context_2_combined=tensor_combine(context_1,context_2)
+
+        if context_1 is not None:
+            shape_1=context_1.shape[0]
+        else:
+            shape_1=1
+        if context_2 is not None:
+            shape_2=context_2.shape[0]
+        else:
+            shape_2=1
+        
+        Bs = shape_1*shape_2
+        x[:, 1, :] *= 0.1
+        x = x.repeat(Bs, 1, 1).to(self.device)
+        context_1_combined,context_2_combined = tensor_combine(context_1,context_2)
         for t in range(t_max-1, 0, -1):
-            time_embedding = torch.tensor(t, dtype=torch.float32).unsqueeze(0).expand(x.shape[0], -1).cuda()
+            time_embedding = torch.tensor(t, dtype=torch.float32).unsqueeze(0).expand(Bs, -1).to(self.device)
             hidden_without_context=self.model(x, time_embedding, context_1=None, context_2=None)
-            hidden_with_context=self.model(x, time_embedding, context_1=context_1_combined, context_2=context_2_combined)
-            #因为是多目标，所以需要对hidden_with_context进行处理
-            hidden_with_context=weighted_average(hidden_with_context)
-            noise_pred= hidden_without_context + CFG*( hidden_with_context-hidden_without_context)
-            add_noise=torch.normal(mean=mean, std=std, size=(20,)).reshape(1,-1,20).cuda()
+
+            if context_1_combined or context_2_combined:
+                hidden_with_context=self.model(x, time_embedding, context_1=context_1_combined, context_2=context_2_combined)
+                #因为是多目标，所以需要对hidden_with_context进行处理
+                hidden_with_context=weighted_average(hidden_with_context)
+                noise_pred= hidden_without_context + CFG*( hidden_with_context-hidden_without_context)
+            else:
+                noise_pred = hidden_without_context
+            
+            add_noise=torch.normal(mean=mean, std=std, size=(200,)).reshape(1,2,-1).to(self.device)
             x=1/sqrt(self.alpha[t])*(x-(1-self.alpha[t])*noise_pred/sqrt(1-self.alphabar[t]))+self.beta[t]*(1-self.alphabar[t-1])/(1-self.alphabar[t])*add_noise
 
             # with open('D:/generate_2/airfoil_diffusion/generate.csv', 'a', newline='') as csvfile:
