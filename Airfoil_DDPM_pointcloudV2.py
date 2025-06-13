@@ -22,6 +22,27 @@ def default(val, d):
         return val
     return d() if callable(d) else d
 
+def sin_cos_embedding(pc, embed_dim=32, scale=1.0):
+    """
+    pc: [B, D, N] (D通常为3)
+    embed_dim: 每个坐标维度的编码维度（总维度=D*embed_dim*2）
+    scale: 控制频率范围（默认为1.0）
+    """
+    B, D, N = pc.shape
+    pos = pc.permute(0, 2, 1)  # [B, N, D]
+    
+    # 生成频率因子
+    dim_t = torch.arange(embed_dim, dtype=torch.float32, device=pc.device)
+    dim_t = scale ** (2 * (dim_t // 2) / embed_dim)  # [embed_dim]
+    
+    # 计算正弦和余弦编码
+    pos_enc = pos.unsqueeze(-1) * dim_t.view(1, 1, 1, -1)  # [B, N, D, embed_dim]
+    pos_enc = torch.cat([torch.sin(pos_enc), torch.cos(pos_enc)], dim=-1)  # [B, N, D, 2*embed_dim]
+    
+    # 展平并拼接原始特征
+    pos_enc = pos_enc.reshape(B, N, -1).permute(0, 2, 1)  # [B, D*2*embed_dim, N]
+    return pos_enc
+
 
 class PointNetEncoder(nn.Module):
     def __init__(self, dim=2, dim_out=128):
@@ -68,13 +89,14 @@ class Block(Module):#包含卷积、归一化、激活和 Dropout 等操作的�
     '''
     def __init__(self, dim, dropout = 0.):
         super().__init__()
-        self.proj = nn.Conv1d(in_channels = dim, out_channels = dim, kernel_size = 3, padding = 1)#一维卷积
+        self.proj = nn.Conv1d(in_channels = dim, out_channels = dim, kernel_size = 3, padding = 1)#一维卷积,实际上是全连接
         self.norm = RMSNorm(dim)
-        self.act = nn.SiLU()  #Sigmoid
+        self.act = nn.Sigmoid()
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, scale_shift = None):
         x = self.proj(x)
+        x = self.act(x)
         x = self.norm(x)
 
         if exists(scale_shift):
@@ -216,19 +238,18 @@ class Unet(nn.Module):
         super().__init__()
         # self.encoder = PointNetEncoder(dim=dim, dim_out=encoder_dim)
         # self.block_1 = UNet_Block(dim=dim, context_dim=encoder_dim, time_emb_dim=time_emb_dim, dropout = dropout)
-        self.block_2 = UNet_Block(dim=dim, context_dim=context_dim_1, time_emb_dim=time_emb_dim, dropout = dropout)
-        self.block_3 = UNet_Block(dim=dim, context_dim=context_dim_2, time_emb_dim=time_emb_dim, dropout = dropout)
+        self.block_2 = UNet_Block(dim=dim + dim*2*16, context_dim=context_dim_1, time_emb_dim=time_emb_dim, dropout = dropout)
+        self.block_3 = UNet_Block(dim=dim + dim*2*16, context_dim=context_dim_2, time_emb_dim=time_emb_dim, dropout = dropout)
 
     def forward(self, x, time_emb, context_1=None, context_2=None):
         # position_emb = self.encoder(x)
         # x = self.block_1(x, time_emb=time_emb, context=position_emb)
+        embedding = sin_cos_embedding(x, embed_dim=16)  # [B, D * 2 * 16, N]
+        x = torch.cat([x, embedding], dim=1)
         x = self.block_2(x, time_emb=time_emb, context=context_1)
         x = self.block_3(x, time_emb=time_emb, context=context_2)
-        return x
-        
-
-
-    
+        return x[:, :2, :]
+            
 
 
     
@@ -282,9 +303,9 @@ class Airfoil_DDPM_multitask(nn.Module):
         #self.model.load_state_dict(checkpoint['models'])
         self.model=model.to(device)
 
-        self.beta=torch.linspace(0.0001, 0.02, steps=1000)
+        self.beta=torch.linspace(0.0001, 0.02, steps=500)
         self.alpha=1-self.beta
-        self.alphabar=cal_alpha_bar(self.alpha, 1000)
+        self.alphabar=cal_alpha_bar(self.alpha, 500)
 
 
         self.beta = self.beta.to(device)
@@ -295,7 +316,7 @@ class Airfoil_DDPM_multitask(nn.Module):
 
     def forward(self, x, context_1, context_2, CFG=1, t_max=500):
         mean = 0.5  # 均值
-        std = 1.0  # 标准差
+        std = 0.5  # 标准差
         if x is None:
             x = torch.normal(mean=mean, std=std, size=(200,)).reshape(1,2,-1).to(self.device)
         else:
@@ -314,6 +335,7 @@ class Airfoil_DDPM_multitask(nn.Module):
         
         Bs = shape_1*shape_2
         x[:, 1, :] *= 0.1
+
         x = x.repeat(Bs, 1, 1).to(self.device)
         context_1_combined,context_2_combined = tensor_combine(context_1,context_2)
         for t in range(t_max-1, 0, -1):

@@ -67,7 +67,7 @@ def random_sample_points(input, num_samples=100):
     return sampled
 
 
-def forward_propagation(model, loss, metric, input, context_1 = None, context_2 = None, time_step = 1000, device = 'cuda'):
+def forward_propagation(model, loss, metric, input, context_1 = None, context_2 = None, time_step = 1000, device = 'cuda', data_aug=None):
     '''
     Input:
         input: Tensor [B, D, N]
@@ -91,6 +91,10 @@ def forward_propagation(model, loss, metric, input, context_1 = None, context_2 
         # 沿着第一个维度展开
         noise_tensor_flattened = noise_tensor_no_t0.reshape(-1,noise_tensor_no_t0.shape[-2],noise_tensor_no_t0.shape[-1])#[(time_step-1)*B, D, N]
         input_tensor_flattened = input_tensor_no_t0.reshape(-1,input_tensor_no_t0.shape[-2],input_tensor_no_t0.shape[-1])#[(time_step-1)*B, D, N]
+
+        if data_aug:
+            input_tensor_flattened = data_aug(input_tensor_flattened)
+
         # 获取 noise_tensor_flattened 的时间步总数
         N = noise_tensor_no_t0.shape[0] #time_step-1
         # 创建时间嵌入向量
@@ -188,6 +192,7 @@ def main(opt):
         data_path = os.path.join("../data","train_data_pointcloud.npz")
     data = np.load(data_path)
     loaded_pointcloud = np.transpose(data['pointcloud'],(0,2,1))  # 形状 [B, N, D]-> [B, D, N]
+    loaded_pointcloud[:, 1, :] *= 5
     loaded_ACC = data['ACC']                # 形状 [B, 6]
 
     '''Dataloader'''
@@ -218,6 +223,15 @@ def main(opt):
         pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, N, 3]
         acc_batch = batch['acc']                # 形状 [batch_size, 6]
     '''
+    '''
+    设置数据增强
+    '''
+    augmenter = Dataloader.PointCloudAugmenter(
+        translate_range=(-0.3, 0.3),  # 各维度在[-0.1, 0.1]内随机平移
+        scale_range=(0.9, 1.1),       # 全局缩放范围[0.9, 1.1]
+        per_dim_scale=False,          # 全局缩放
+        augment_prob=0.8,             # 80%概率增强
+    )
 
     train_step=0
     best_loss = 1e6
@@ -250,7 +264,7 @@ def main(opt):
                 context_2 = context_2.reshape(-1,context_2.shape[-2],context_2.shape[-1])
 
             #第一次正向传播和反向传播
-            step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = None, context_2 = None, time_step = time_step, device = opt.device)
+            step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = None, context_2 = None, time_step = time_step, device = opt.device, data_aug=augmenter)
             optim.zero_grad()
             step_loss.backward()
             optim.step()
@@ -265,7 +279,7 @@ def main(opt):
             
 
             if context_1 is not None:
-                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = None, time_step = time_step, device = opt.device)
+                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = None, time_step = time_step, device = opt.device, data_aug=augmenter)
                 optim.zero_grad()
                 step_loss.backward()
                 optim.step()
@@ -280,7 +294,7 @@ def main(opt):
                     
             
             if context_2 is not None:
-                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = None, context_2 = context_2, time_step = time_step, device = opt.device)
+                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = None, context_2 = context_2, time_step = time_step, device = opt.device, data_aug=augmenter)
                 optim.zero_grad()
                 step_loss.backward()
                 optim.step()
@@ -295,7 +309,7 @@ def main(opt):
                     
             
             if context_1 is not None and context_2 is not None:
-                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device)
+                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device, data_aug=augmenter)
                 optim.zero_grad()
                 step_loss.backward()
                 optim.step()
