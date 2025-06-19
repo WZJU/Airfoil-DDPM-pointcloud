@@ -95,16 +95,23 @@ class Unet(nn.Module):
         time_emb = torch.cat([beta, torch.sin(beta), torch.cos(beta)], dim=-1)  # (B, 1, 3)
         ctx_emb = torch.cat([time_emb, context], dim=-1)    # (B, 1, F+3)
 
-        out = x
+        out = [x]  # Initialize with input point cloud [B, N, D]
+        length = len(self.layers)
         for i, layer in enumerate(self.layers):
-            out = layer(ctx=ctx_emb, x=out)
-            if i < len(self.layers) - 1:
-                out = self.act(out)
+            if i<= length//2:
+                input_x = out[-1]
+            else:
+                input_x = out[-1] + out[length-i]
+            output = layer(ctx=ctx_emb, x=input_x)
+            if i < length - 1:
+                out.append(self.act(output))
+            else:
+                out.append(output)
 
         if self.residual:
-            return x + out
+            return x + out[-1]
         else:
-            return out
+            return out[-1]
     
 '''Generation'''
 def tensor_combine(tensor1,tensor2):
