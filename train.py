@@ -7,7 +7,7 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-from Airfoil_DDPM_pointcloudV2 import Unet
+from Airfoil_DDPM_pointcloudV3 import Unet
 from torch.utils.data import DataLoader,TensorDataset
 from torch.utils.tensorboard import SummaryWriter
 #from mlp_data import MyData
@@ -19,7 +19,7 @@ import numpy as np
 
 
 import auxiliary.argument_parser as argument_parser
-import auxiliary.Dataloader as Dataloader
+import auxiliary.DataloaderV2 as Dataloader
 import datetime
 import logging
 from pathlib import Path
@@ -67,30 +67,30 @@ def random_sample_points(input, num_samples=100):
     return sampled
 
 
-def forward_propagation(model, loss, metric, input, context_1 = None, context_2 = None, time_step = 1000, device = 'cuda', data_aug=None):
+def forward_propagation(model, loss, metric, input, context=None, time_step = 500, device = 'cuda', data_aug=None):
     '''
     Input:
-        input: Tensor [B, D, N]
+        input: Tensor [B, N, D]
         context : Tensor [(time_step-1)*B, 1, D(3)] or None
     return: loss, metric
     '''
     with torch.no_grad():
         input = random_sample_points(input, num_samples=100)#[B, D, N sample]
-        noise_tensor = torch.randn(time_step, input.size(0), input.size(1), input.size(2)) #[time_step, B, D, N]
+        noise_tensor = torch.randn(time_step, input.size(0), input.size(1), input.size(2)) #[time_step, B, N, D]
         input_tensor = input.unsqueeze(0) #[1,B,N,C]
-        input_tensor = input_tensor.expand(time_step, *input_tensor.shape[1:])#广播#[time_step, B, D, N]
+        input_tensor = input_tensor.expand(time_step, *input_tensor.shape[1:])#广播#[time_step, B, N, D]
         # 将一维张量扩展到与 input_tensor 和 noise_tensor 相匹配的维度
         sqrtalphabar_expanded = sqrtalphabar.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(input_tensor) #torch[time_step, 1 , 1, 1]->torch[time_step, B, D, N]
-        sqrt_1_m_alphabar_expanded = sqrt_1_m_alphabar.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(noise_tensor)#[time_step, B, D, N]
+        sqrt_1_m_alphabar_expanded = sqrt_1_m_alphabar.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(noise_tensor)#[time_step, B, N, D]
         # 使用向量化操作进行计算
-        input_tensor = sqrtalphabar_expanded * input_tensor + sqrt_1_m_alphabar_expanded * noise_tensor #[time_step, B, D, N]
+        input_tensor = sqrtalphabar_expanded * input_tensor + sqrt_1_m_alphabar_expanded * noise_tensor #[time_step, B, N, D]
         #处理反向预测数据
         # 获取除了 t = 0 之外的切片
-        noise_tensor_no_t0 = noise_tensor[1:]#[time_step-1, B, D, N]
-        input_tensor_no_t0 = input_tensor[1:]#[time_step-1, B, D, N]
+        noise_tensor_no_t0 = noise_tensor[1:]#[time_step-1, B, N, D]
+        input_tensor_no_t0 = input_tensor[1:]#[time_step-1, B, N, D]
         # 沿着第一个维度展开
-        noise_tensor_flattened = noise_tensor_no_t0.reshape(-1,noise_tensor_no_t0.shape[-2],noise_tensor_no_t0.shape[-1])#[(time_step-1)*B, D, N]
-        input_tensor_flattened = input_tensor_no_t0.reshape(-1,input_tensor_no_t0.shape[-2],input_tensor_no_t0.shape[-1])#[(time_step-1)*B, D, N]
+        noise_tensor_flattened = noise_tensor_no_t0.reshape(-1,noise_tensor_no_t0.shape[-2],noise_tensor_no_t0.shape[-1])#[(time_step-1)*B, N, D]
+        input_tensor_flattened = input_tensor_no_t0.reshape(-1,input_tensor_no_t0.shape[-2],input_tensor_no_t0.shape[-1])#[(time_step-1)*B, N, D]
 
         if data_aug:
             input_tensor_flattened = data_aug(input_tensor_flattened)
@@ -105,7 +105,14 @@ def forward_propagation(model, loss, metric, input, context_1 = None, context_2 
         input_tensor_flattened=input_tensor_flattened.to(device)
         noise_tensor_flattened=noise_tensor_flattened.to(device)
 
-    pred_noise_context = model(input_tensor_flattened, time_embedding, context_1=context_1, context_2=context_2)
+        if context is not None:
+            input_context = context.unsqueeze(1).unsqueeze(0) #[1,B,1,F]
+            input_context = input_context.expand(time_step, *input_context.shape[1:])#广播#[time_step, B, N, D]
+            input_context_no_t0 = input_context[1:]#[time_step-1, B, N, D]
+            context = input_context_no_t0.reshape(-1,input_context_no_t0.shape[-2],input_context_no_t0.shape[-1])#[(time_step-1)*B, N, D]
+            context=context.to(device)
+
+    pred_noise_context = model(input_tensor_flattened, time_embedding, context)
     loss = loss(pred_noise_context, noise_tensor_flattened)
     metric = metric(pred_noise_context, noise_tensor_flattened)
     del noise_tensor, input_tensor, sqrtalphabar_expanded, sqrt_1_m_alphabar_expanded, noise_tensor_no_t0, input_tensor_no_t0
@@ -171,7 +178,7 @@ def main(opt):
     shutil.copy(os.path.join('Airfoil_DDPM_pointcloud.py'), str(exp_dir))
 
     '''Init'''
-    df_model=Unet(dim = 2, encoder_dim=128, time_emb_dim=1, context_dim_1 = 3, context_dim_2 = 3, dropout = 0.).to(device)#
+    df_model=Unet(point_dim=2, context_dim=6, residual=True).to(device)#
     # checkpoint = torch.load('E:/wenzhe/generation2/airfoil_diffusion/models3/DFmodel_context_c3.1.5_100.pth', map_location=torch.device(device),weights_only=True)   ### 加载神经网络模型
     # df_model = partial_load_state_dict(df_model, checkpoint)
 
@@ -191,7 +198,8 @@ def main(opt):
     else:
         data_path = os.path.join("../data","train_data_pointcloud.npz")
     data = np.load(data_path)
-    loaded_pointcloud = np.transpose(data['pointcloud'],(0,2,1))  # 形状 [B, N, D]-> [B, D, N]
+    # loaded_pointcloud = np.transpose(data['pointcloud'],(0,2,1))  # 形状 [B, N, D]-> [B, D, N]
+    loaded_pointcloud = np.transpose(data['pointcloud'],(0,1,2))    #[B, N, D]
     loaded_pointcloud[:, 1, :] *= 10
     loaded_ACC = data['ACC']                # 形状 [B, 6]
 
@@ -220,7 +228,7 @@ def main(opt):
     '''
     Dataloader使用示例
     for batch in dataloader:
-        pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, N, 3]
+        pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, N, D]
         acc_batch = batch['acc']                # 形状 [batch_size, 6]
     '''
     '''
@@ -246,25 +254,10 @@ def main(opt):
             pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, D, N]
             # context_1 = batch['context_1']                # 形状 [batch_size, 3]
             # context_2 = batch['context_2']                # 形状 [batch_size, 3]
-            context_1 = None
-            context_2 = None
-
-            if context_1 is not None:
-                context_1 = context_1.unsqueeze(1).to(device) #[B, 1, C]
-                context_1 = context_1.unsqueeze(0) #[1, B, 1, C]
-                #广播到时间维度上
-                context_1 = context_1.expand(time_step-1, *context_1.shape[1:])#广播,但是少一次，因为t=0的时候不用 #[time_step-1, B, 1, C]
-                context_1 = context_1.reshape(-1,context_1.shape[-2],context_1.shape[-1]) #[(time_step-1)*B, 1, C]
-            
-            if context_2 is not None:
-                context_2 = context_2.unsqueeze(1).to(device)
-                context_2 = context_2.unsqueeze(0)
-                #广播到时间维度上
-                context_2 = context_2.expand(time_step-1, *context_2.shape[1:])#广播,但是少一次，因为t=0的时候不用
-                context_2 = context_2.reshape(-1,context_2.shape[-2],context_2.shape[-1])
+            context = batch['acc']# 形状 [batch_size, 6]
 
             #第一次正向传播和反向传播
-            step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = None, context_2 = None, time_step = time_step, device = opt.device, data_aug=augmenter)
+            step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context, time_step = time_step, device = opt.device, data_aug=augmenter)
             optim.zero_grad()
             step_loss.backward()
             optim.step()
@@ -277,50 +270,6 @@ def main(opt):
                 writer = csv.writer(csvfile)
                 writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
             
-
-            if context_1 is not None:
-                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = None, time_step = time_step, device = opt.device, data_aug=augmenter)
-                optim.zero_grad()
-                step_loss.backward()
-                optim.step()
-                train_step+=1
-                train_number += 1
-                train_loss += step_loss.item()
-                train_metric += step_metric.item()
-                current_lr = optim.param_groups[0]['lr']
-                with open(train_process, 'a', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
-                    
-            
-            if context_2 is not None:
-                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = None, context_2 = context_2, time_step = time_step, device = opt.device, data_aug=augmenter)
-                optim.zero_grad()
-                step_loss.backward()
-                optim.step()
-                train_step+=1
-                train_number += 1
-                train_loss += step_loss.item()
-                train_metric += step_metric.item()
-                current_lr = optim.param_groups[0]['lr']
-                with open(train_process, 'a', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
-                    
-            
-            if context_1 is not None and context_2 is not None:
-                step_loss, step_metric = forward_propagation(df_model, loss, metric, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device, data_aug=augmenter)
-                optim.zero_grad()
-                step_loss.backward()
-                optim.step()
-                train_step+=1
-                train_number += 1
-                train_loss += step_loss.item()
-                train_metric += step_metric.item()
-                current_lr = optim.param_groups[0]['lr']
-                with open(train_process, 'a', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow([epoch + 1,train_step,current_lr, step_loss.item(), step_metric.item()])
             
         lr_scheduler.step()
         torch.cuda.empty_cache()
@@ -334,43 +283,17 @@ def main(opt):
             pointcloud_batch = batch['pointcloud']  # 形状 [batch_size, D, N]
             # context_1 = batch['context_1']                # 形状 [batch_size, 3]
             # context_2 = batch['context_2']                # 形状 [batch_size, 3]
-            context_1 = None
-            context_2 = None
+            context = batch['acc']# 形状 [batch_size, 6]
 
-            if context_1 is not None:
-                context_1 = context_1.unsqueeze(1).to(device) #[B, 1, C]
-                context_1 = context_1.unsqueeze(0) #[1, B, 1, C]
-                #广播到时间维度上
-                context_1 = context_1.expand(time_step-1, *context_1.shape[1:])#广播,但是少一次，因为t=0的时候不用 #[time_step-1, B, 1, C]
-                context_1 = context_1.reshape(-1,context_1.shape[-2],context_1.shape[-1]) #[(time_step-1)*B, 1, C]
-            
-            if context_2 is not None:
-                context_2 = context_2.unsqueeze(1).to(device)
-                context_2 = context_2.unsqueeze(0)
-                #广播到时间维度上
-                context_2 = context_2.expand(time_step-1, *context_2.shape[1:])#广播,但是少一次，因为t=0的时候不用
-                context_2 = context_2.reshape(-1,context_2.shape[-2],context_2.shape[-1])
-
-            
-            if context_1 is not None or context_2 is not None:
-                with torch.no_grad():
-                    step_loss, step_metric = forward_propagation(df_model.eval(), loss, metric, pointcloud_batch, context_1 = context_1, context_2 = context_2, time_step = time_step, device = opt.device)
-                    valid_number += 1
-                    valid_loss += step_loss.item()
-                    valid_metric +=step_metric.item()
-                with open(train_process, 'a', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow([epoch + 1, step_loss.item(), step_metric.item()])
-            else:
-                #正向传播
-                with torch.no_grad():
-                    step_loss, step_metric = forward_propagation(df_model.eval(), loss, metric, pointcloud_batch, context_1 = None, context_2 = None, time_step = time_step, device = opt.device)
-                    valid_number += 1
-                    valid_loss += step_loss.item()
-                    valid_metric +=step_metric.item()
-                with open(valid_process, 'a', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow([epoch + 1, step_loss.item(), step_metric.item()])
+            #正向传播
+            with torch.no_grad():
+                step_loss, step_metric = forward_propagation(df_model.eval(), loss, metric, pointcloud_batch, context, time_step = time_step, device = opt.device)
+                valid_number += 1
+                valid_loss += step_loss.item()
+                valid_metric +=step_metric.item()
+            with open(valid_process, 'a', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow([epoch + 1, step_loss.item(), step_metric.item()])
                     
         torch.cuda.empty_cache()  
         log_string(f"[VALID] Epoch: {epoch+1}, MSE = {valid_loss/valid_number}, MAE = {valid_metric/valid_number}")
