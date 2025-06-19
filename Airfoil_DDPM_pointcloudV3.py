@@ -115,16 +115,14 @@ class Unet(nn.Module):
     
 '''Generation'''
 def tensor_combine(tensor1,tensor2):
-    combinations1 = []
-    combinations2 = []
+    combinations = []
     if (tensor1 is None)or(tensor2 is None):
         return tensor1,tensor2
     for i in range(tensor1.shape[0]):
         for j in range(tensor2.shape[0]):
-            combinations1.append(tensor1[i])
-            combinations2.append(tensor2[j])
+            combinations.append(tensor1[i],tensor2[j])
 
-    return torch.stack(combinations1), torch.stack(combinations2)
+    return torch.stack(combinations)
 
 def weighted_average(tensor):
     n = tensor.shape[0]
@@ -174,43 +172,24 @@ class Airfoil_DDPM_multitask(nn.Module):
         self.model = self.model.to(device)
         self.device = device
 
-    def forward(self, x, context_1, context_2, CFG=1, t_max=500):
+    def forward(self, x, context, CFG=1, t_max=500):
         mean = 0.5  # 均值
         std = 0.5  # 标准差
+        Bs, n, _ = context.size()
         if x is None:
-            x = torch.normal(mean=mean, std=std, size=(200,)).reshape(1,2,-1).to(self.device)
+            x = torch.normal(mean=mean, std=std, size=(n*2,)).reshape(1,-1,2).to(self.device)
         else:
             xmean = x.mean()
             xstd = x.std()
             x = (x - xmean) / xstd*2
 
-        if context_1 is not None:
-            shape_1=context_1.shape[0]
-        else:
-            shape_1=1
-        if context_2 is not None:
-            shape_2=context_2.shape[0]
-        else:
-            shape_2=1
-        
-        Bs = shape_1*shape_2
-        x[:, 1, :] *= 0.1
+        # x[:, 1, :] *= 0.1
 
         x = x.repeat(Bs, 1, 1).to(self.device)
-        context_1_combined,context_2_combined = tensor_combine(context_1,context_2)
         for t in range(t_max-1, 0, -1):
             time_embedding = torch.tensor(t, dtype=torch.float32).unsqueeze(0).expand(Bs, -1).to(self.device)
-            hidden_without_context=self.model(x, time_embedding, context_1=None, context_2=None)
-
-            if context_1_combined or context_2_combined:
-                hidden_with_context=self.model(x, time_embedding, context_1=context_1_combined, context_2=context_2_combined)
-                #因为是多目标，所以需要对hidden_with_context进行处理
-                hidden_with_context=weighted_average(hidden_with_context)
-                noise_pred= hidden_without_context + CFG*( hidden_with_context-hidden_without_context)
-            else:
-                noise_pred = hidden_without_context
-            
-            add_noise=torch.normal(mean=mean, std=std, size=(200,)).reshape(1,2,-1).to(self.device)
+            noise_pred=self.model(x, time_embedding, context=context)
+            add_noise=torch.normal(mean=mean, std=std, size=(n*2,)).reshape(1,-1,2).to(self.device)
             x=1/sqrt(self.alpha[t])*(x-(1-self.alpha[t])*noise_pred/sqrt(1-self.alphabar[t]))+self.beta[t]*(1-self.alphabar[t-1])/(1-self.alphabar[t])*add_noise
 
             # with open('D:/generate_2/airfoil_diffusion/generate.csv', 'a', newline='') as csvfile:
