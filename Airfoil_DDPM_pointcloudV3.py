@@ -70,7 +70,7 @@ class Unet(nn.Module):
     '''
     def __init__(self, point_dim, context_dim, residual):
         super().__init__()
-        self.act = F.leaky_relu
+        self.act = F.sigmoid
         self.residual = residual
         self.layers = ModuleList([
             ConcatSquashLinear(point_dim, 128, context_dim+3),
@@ -173,8 +173,8 @@ class Airfoil_DDPM_multitask(nn.Module):
         self.device = device
 
     def forward(self, x, context, CFG=1, t_max=500):
-        mean = 0.5  # 均值
-        std = 0.5  # 标准差
+        mean = 0  # 均值
+        std = 1  # 标准差
         Bs, n, _ = context.size()
         if x is None:
             x = torch.normal(mean=mean, std=std, size=(n*2,)).reshape(1,-1,2).to(self.device)
