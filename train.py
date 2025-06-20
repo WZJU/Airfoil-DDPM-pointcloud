@@ -81,12 +81,14 @@ def forward_propagation(model, loss, metric, input, context=None, time_step = 50
     with torch.no_grad():
         batch_size, _, point_dim = input.size()
         time_embedding = uniform_sample_t(time_step, batch_size)
-        input = random_sample_points(input, num_samples=100)#[B, D, N sample]
+        # input = random_sample_points(input, num_samples=100)#[B, D, N sample]
 
         c0 = sqrtalphabar[time_embedding].view(-1, 1, 1)        # (B, 1, 1)
         c1 = sqrt_1_m_alphabar[time_embedding].view(-1, 1, 1) 
 
         e_rand = torch.randn_like(input)  # (B, N, d)
+        if data_aug:
+            input = data_aug(input)
         noise_input = c0 * input + c1 * e_rand
 
         noise_input = noise_input.to(device)
@@ -156,7 +158,7 @@ def main(opt):
     #copy training code and parser
     shutil.copy(os.path.join('train.py'), str(exp_dir))
     shutil.copy(os.path.join('auxiliary/argument_parser.py'), str(exp_dir))
-    shutil.copy(os.path.join('Airfoil_DDPM_pointcloud.py'), str(exp_dir))
+    shutil.copy(os.path.join('Airfoil_DDPM_pointcloudV3.py'), str(exp_dir))
 
     '''Init'''
     df_model=Unet(point_dim=2, context_dim=6, residual=True).to(device)#
@@ -166,7 +168,7 @@ def main(opt):
     loss = nn.MSELoss().to(device)
     metric = nn.L1Loss().to(device)
     optim = torch.optim.Adam(df_model.parameters(), lr=opt.learning_rate)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optim, step_size=20, gamma=0.3, last_epoch=-1)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optim, step_size=20, gamma=0.2, last_epoch=-1)
 
     time_step = opt.time_step
     alpha=1-torch.linspace(0.0001, 0.02, steps=time_step)
@@ -181,7 +183,7 @@ def main(opt):
     data = np.load(data_path)
     # loaded_pointcloud = np.transpose(data['pointcloud'],(0,2,1))  # 形状 [B, N, D]-> [B, D, N]
     loaded_pointcloud = np.transpose(data['pointcloud'],(0,1,2))    #[B, N, D]
-    loaded_pointcloud[:, 1, :] *= 10
+    loaded_pointcloud[:, :, 1] *= 10
     loaded_ACC = data['ACC']                # 形状 [B, 6]
 
     '''Dataloader'''
