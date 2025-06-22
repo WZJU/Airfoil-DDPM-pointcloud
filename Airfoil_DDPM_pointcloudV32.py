@@ -196,7 +196,7 @@ class Airfoil_DDPM_multitask(nn.Module):
 
     def forward(self, x, context, CFG=1, t_max=500):
         mean = 0  # 均值
-        std = 1  # 标准差
+        std = 0.5  # 标准差
         Bs, n, _ = context.size()
         if x is None:
             x = torch.normal(mean=mean, std=std, size=(n*2,)).reshape(1,-1,2).to(self.device)
